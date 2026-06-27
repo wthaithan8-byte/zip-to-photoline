@@ -1,0 +1,5 @@
+package com.thugcom.zip_to_line
+
+import io.flutter.embedding.android.FlutterActivity
+
+class MainActivity : FlutterActivity()
