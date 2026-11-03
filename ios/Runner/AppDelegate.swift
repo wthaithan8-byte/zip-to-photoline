@@ -19,9 +19,10 @@ import UniformTypeIdentifiers
   }
 }
 
-// Shares each photo the way the Photos app does: a file URL registered under an
-// image type (public.jpeg etc.). Raw Data hid LINE from the share sheet, and an
-// untyped URL made LINE post each photo as a separate file message.
+// Shares photos the way the Photos app does: one item provider per photo that
+// registers only its image type (public.jpeg etc.) as a file representation.
+// Any extra public.file-url type makes LINE post each photo as its own message
+// instead of grouping them into an album.
 final class ImageSharePlugin: NSObject, FlutterPlugin {
   static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(name: "zipphoto/share", binaryMessenger: registrar.messenger())
@@ -40,8 +41,13 @@ final class ImageSharePlugin: NSObject, FlutterPlugin {
       return
     }
 
-    let items = paths.map { ImageItemSource(url: URL(fileURLWithPath: $0)) }
-    let sheet = UIActivityViewController(activityItems: items, applicationActivities: nil)
+    let providers = paths.map { Self.imageProvider(for: URL(fileURLWithPath: $0)) }
+    let configuration = UIActivityItemsConfiguration(itemProviders: providers)
+    configuration.previewProvider = { index, _, _ in
+      guard index < paths.count, let image = UIImage(contentsOfFile: paths[index]) else { return nil }
+      return NSItemProvider(object: image)
+    }
+    let sheet = UIActivityViewController(activityItemsConfiguration: configuration)
     if let popover = sheet.popoverPresentationController {
       popover.sourceView = presenter.view
       if let x = args["x"] as? Double, let y = args["y"] as? Double,
@@ -61,6 +67,17 @@ final class ImageSharePlugin: NSObject, FlutterPlugin {
     presenter.present(sheet, animated: true)
   }
 
+  private static func imageProvider(for url: URL) -> NSItemProvider {
+    let type = UTType(filenameExtension: url.pathExtension) ?? .jpeg
+    let provider = NSItemProvider()
+    provider.suggestedName = url.deletingPathExtension().lastPathComponent
+    provider.registerFileRepresentation(forTypeIdentifier: type.identifier, fileOptions: [], visibility: .all) { completion in
+      completion(url, false, nil)
+      return nil
+    }
+    return provider
+  }
+
   private static func topViewController() -> UIViewController? {
     let window = UIApplication.shared.connectedScenes
       .compactMap { $0 as? UIWindowScene }
@@ -69,29 +86,5 @@ final class ImageSharePlugin: NSObject, FlutterPlugin {
     var top = window?.rootViewController
     while let presented = top?.presentedViewController { top = presented }
     return top
-  }
-}
-
-final class ImageItemSource: NSObject, UIActivityItemSource {
-  private let url: URL
-  private let typeIdentifier: String
-
-  init(url: URL) {
-    self.url = url
-    self.typeIdentifier = UTType(filenameExtension: url.pathExtension)?.identifier ?? UTType.jpeg.identifier
-  }
-
-  func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
-    UIImage(contentsOfFile: url.path) ?? UIImage()
-  }
-
-  func activityViewController(_ activityViewController: UIActivityViewController,
-                              itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
-    url
-  }
-
-  func activityViewController(_ activityViewController: UIActivityViewController,
-                              dataTypeIdentifierForActivityType activityType: UIActivity.ActivityType?) -> String {
-    typeIdentifier
   }
 }
