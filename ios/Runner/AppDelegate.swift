@@ -20,7 +20,7 @@ import UniformTypeIdentifiers
 }
 
 // Shares photos the way the Photos app does: one item provider per photo that
-// registers only its image type (public.jpeg etc.) as a file representation.
+// registers only its image type (public.jpeg etc.) and yields a file URL.
 // Any extra public.file-url type makes LINE post each photo as its own message
 // instead of grouping them into an album.
 final class ImageSharePlugin: NSObject, FlutterPlugin {
@@ -71,9 +71,10 @@ final class ImageSharePlugin: NSObject, FlutterPlugin {
     let type = UTType(filenameExtension: url.pathExtension) ?? .jpeg
     let provider = NSItemProvider()
     provider.suggestedName = url.deletingPathExtension().lastPathComponent
-    provider.registerFileRepresentation(forTypeIdentifier: type.identifier, fileOptions: [], visibility: .all) { completion in
-      completion(url, false, nil)
-      return nil
+    // registerItem (not registerFileRepresentation): the receiver gets this readable
+    // URL, whereas a file representation hands extensions a temp copy they can't open.
+    provider.registerItem(forTypeIdentifier: type.identifier) { completion, _, _ in
+      completion?(url as NSURL, nil)
     }
     return provider
   }
