@@ -66,6 +66,10 @@ class _HomePageState extends State<HomePage> {
   final Set<int> _sharedIndices = {};
   final _shareButtonKey = GlobalKey();
 
+  int _gridColumns = 3;
+  final Map<int, Offset> _pinchPointers = {};
+  double? _pinchBaseDistance;
+
   bool get _isPremium => PurchaseService.instance.isPremium;
   int get _maxSelection => _isPremium ? _premiumMaxSelection : _freeMaxSelection;
   int get _maxZipSizeMB => _isPremium ? _premiumMaxZipSizeMB : _freeMaxZipSizeMB;
@@ -283,6 +287,44 @@ class _HomePageState extends State<HomePage> {
     final size = MediaQuery.of(context).size;
     return Rect.fromCenter(center: size.center(Offset.zero), width: 1, height: 1);
   }
+
+  // Pinch is tracked with a raw Listener so it never competes with the grid's
+  // scroll or the tiles' tap/long-press in the gesture arena.
+  void _onGridPointerDown(PointerDownEvent e) {
+    _pinchPointers[e.pointer] = e.position;
+    if (_pinchPointers.length == 2) {
+      setState(() => _pinchBaseDistance = _pinchDistance());
+    }
+  }
+
+  void _onGridPointerMove(PointerMoveEvent e) {
+    if (!_pinchPointers.containsKey(e.pointer)) return;
+    _pinchPointers[e.pointer] = e.position;
+    final base = _pinchBaseDistance;
+    if (_pinchPointers.length != 2 || base == null || base == 0) return;
+    final ratio = _pinchDistance() / base;
+    if (ratio < 1.25 && ratio > 0.8) return;
+    _pinchBaseDistance = _pinchDistance();
+    final next = (_gridColumns + (ratio > 1 ? -1 : 1)).clamp(1, _maxGridColumns());
+    if (next != _gridColumns) {
+      HapticFeedback.selectionClick();
+      setState(() => _gridColumns = next);
+    }
+  }
+
+  void _onGridPointerEnd(PointerEvent e) {
+    _pinchPointers.remove(e.pointer);
+    if (_pinchPointers.length < 2 && _pinchBaseDistance != null) {
+      setState(() => _pinchBaseDistance = null);
+    }
+  }
+
+  double _pinchDistance() {
+    final p = _pinchPointers.values.toList();
+    return (p[0] - p[1]).distance;
+  }
+
+  int _maxGridColumns() => (MediaQuery.of(context).size.width / 70).floor().clamp(3, 10);
 
   void _openViewer(int initialIndex) {
     Navigator.of(context).push(
@@ -539,12 +581,21 @@ class _HomePageState extends State<HomePage> {
         ),
       );
     }
-    return GridView.builder(
-      padding: const EdgeInsets.fromLTRB(8, 8, 8, 88),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        crossAxisSpacing: 8,
-        mainAxisSpacing: 8,
+    final columns = _gridColumns.clamp(1, _maxGridColumns());
+    final spacing = columns > 4 ? 3.0 : 8.0;
+    final compact = columns > 4;
+    return Listener(
+      onPointerDown: _onGridPointerDown,
+      onPointerMove: _onGridPointerMove,
+      onPointerUp: _onGridPointerEnd,
+      onPointerCancel: _onGridPointerEnd,
+      child: GridView.builder(
+      physics: _pinchBaseDistance != null ? const NeverScrollableScrollPhysics() : null,
+      padding: EdgeInsets.fromLTRB(spacing, spacing, spacing, 88),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: columns,
+        crossAxisSpacing: spacing,
+        mainAxisSpacing: spacing,
       ),
       itemCount: _images.length,
       itemBuilder: (context, index) {
@@ -561,35 +612,38 @@ class _HomePageState extends State<HomePage> {
               Image.file(image, fit: BoxFit.cover),
               if (isSelected) Container(color: Colors.black.withValues(alpha: 0.35)),
               Positioned(
-                right: 6,
-                top: 6,
+                right: compact ? 3 : 6,
+                top: compact ? 3 : 6,
                 child: CircleAvatar(
-                  radius: 12,
+                  radius: compact ? 9 : 12,
                   backgroundColor: isSelected ? Colors.deepPurple : Colors.white70,
                   child: isSelected
                       ? Text(
                           '${selectedPos + 1}',
-                          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                          style: TextStyle(
+                              color: Colors.white, fontSize: compact ? 10 : 12, fontWeight: FontWeight.bold),
                         )
-                      : const Icon(Icons.circle_outlined, size: 16, color: Colors.black54),
+                      : Icon(Icons.circle_outlined, size: compact ? 12 : 16, color: Colors.black54),
                 ),
               ),
               if (wasShared && !isSelected)
                 Positioned(
-                  left: 6,
-                  bottom: 6,
+                  left: compact ? 3 : 6,
+                  bottom: compact ? 3 : 6,
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                     decoration: BoxDecoration(
                       color: Colors.black54,
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: const Row(
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.check, size: 12, color: Colors.white),
-                        SizedBox(width: 2),
-                        Text('แชร์แล้ว', style: TextStyle(color: Colors.white, fontSize: 10)),
+                        const Icon(Icons.check, size: 12, color: Colors.white),
+                        if (!compact) ...const [
+                          SizedBox(width: 2),
+                          Text('แชร์แล้ว', style: TextStyle(color: Colors.white, fontSize: 10)),
+                        ],
                       ],
                     ),
                   ),
@@ -598,6 +652,7 @@ class _HomePageState extends State<HomePage> {
           ),
         );
       },
+      ),
     );
   }
 }
