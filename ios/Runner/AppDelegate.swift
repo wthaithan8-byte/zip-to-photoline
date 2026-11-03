@@ -57,7 +57,11 @@ final class ImageSharePlugin: NSObject, FlutterPlugin {
         popover.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.midY, width: 1, height: 1)
       }
     }
+    var replied = false
     sheet.completionWithItemsHandler = { _, completed, _, error in
+      // A FlutterResult may only be called once; the handler can fire more than once.
+      guard !replied else { return }
+      replied = true
       if let error = error {
         result(FlutterError(code: "share_failed", message: error.localizedDescription, details: nil))
       } else {

@@ -126,15 +126,16 @@ class _HomePageState extends State<HomePage> {
       (f) => f.path.toLowerCase().endsWith('.zip'),
       orElse: () => files.isNotEmpty ? files.first : SharedMediaFile(path: '', type: SharedMediaType.file),
     );
-    if (zipFile.path.isEmpty) return;
-    await _extractZip(zipFile.path);
+    // The initial-media call and the stream can both deliver the same cold-start share.
+    if (zipFile.path.isEmpty || _isExtracting) return;
     ReceiveSharingIntent.instance.reset();
+    await _extractZip(zipFile.path);
   }
 
   Future<void> _extractZip(String zipPath) async {
-    await _cleanupOldTempDirs();
     setState(() {
       _isExtracting = true;
+      _images = [];
       _error = null;
       _extractDone = 0;
       _extractTotal = 0;
@@ -142,7 +143,9 @@ class _HomePageState extends State<HomePage> {
       _sharedIndices.clear();
     });
 
+    InputFileStream? input;
     try {
+      await _cleanupOldTempDirs();
       final zipFile = File(zipPath);
       final zipSize = await zipFile.length();
       if (zipSize > _maxZipSizeBytes) {
@@ -150,14 +153,15 @@ class _HomePageState extends State<HomePage> {
         setState(() {
           _isExtracting = false;
           _error = 'ไฟล์ ZIP ใหญ่เกินไป (${(zipSize / (1024 * 1024)).toStringAsFixed(0)}MB)\n'
-              'เวอร์ชันฟรีรองรับสูงสุด ${_maxZipSizeMB}MB';
+              '${_isPremium ? 'Premium' : 'เวอร์ชันฟรี'}รองรับสูงสุด ${_maxZipSizeMB}MB';
         });
         if (!_isPremium && mounted) _showUpgradeDialog();
         return;
       }
 
-      final bytes = await zipFile.readAsBytes();
-      final archive = ZipDecoder().decodeBytes(bytes);
+      // Stream from disk: reading a 500MB ZIP into memory gets the app killed on iPhone.
+      input = InputFileStream(zipPath);
+      final archive = ZipDecoder().decodeStream(input);
       final imageEntries = archive.files
           .where((e) => e.isFile && _imageExtensions.contains(_extensionOf(e.name)))
           .toList();
@@ -171,12 +175,14 @@ class _HomePageState extends State<HomePage> {
 
       final extractedImages = <File>[];
       for (final entry in imageEntries) {
-        final outFile = File('${outDir.path}/${_safeFileName(entry.name)}');
-        await outFile.create(recursive: true);
-        await outFile.writeAsBytes(entry.content as List<int>);
-        extractedImages.add(outFile);
+        final outPath = '${outDir.path}/${_safeFileName(entry.name)}';
+        final output = OutputFileStream(outPath);
+        entry.writeContent(output);
+        await output.close();
+        extractedImages.add(File(outPath));
         if (!mounted) return;
         setState(() => _extractDone = extractedImages.length);
+        await Future<void>.delayed(Duration.zero);
       }
 
       if (!mounted) return;
@@ -191,6 +197,8 @@ class _HomePageState extends State<HomePage> {
         _isExtracting = false;
         _error = 'แตกไฟล์ ZIP ไม่สำเร็จ: $e';
       });
+    } finally {
+      await input?.close();
     }
   }
 
@@ -251,20 +259,25 @@ class _HomePageState extends State<HomePage> {
     try {
       final paths = _selectedOrder.map((i) => _images[i].path).toList();
       final origin = _sharePositionOrigin();
+      final bool completed;
       if (Platform.isIOS) {
-        await _imageShareChannel.invokeMethod('shareImages', {
-          'paths': paths,
-          'x': origin.left,
-          'y': origin.top,
-          'w': origin.width,
-          'h': origin.height,
-        });
+        completed = await _imageShareChannel.invokeMethod<bool>('shareImages', {
+              'paths': paths,
+              'x': origin.left,
+              'y': origin.top,
+              'w': origin.width,
+              'h': origin.height,
+            }) ??
+            false;
       } else {
-        await SharePlus.instance.share(ShareParams(
+        final result = await SharePlus.instance.share(ShareParams(
           files: paths.map(XFile.new).toList(),
           sharePositionOrigin: origin,
         ));
+        completed = result.status != ShareResultStatus.dismissed;
       }
+      // Keep the selection if the user backed out of the share sheet.
+      if (!completed || !mounted) return;
       setState(() => _sharedIndices.addAll(_selectedOrder));
       _clearSelection();
     } catch (e) {
@@ -635,6 +648,9 @@ class _HomePageState extends State<HomePage> {
     final columns = _gridColumns.clamp(1, _maxGridColumns());
     final spacing = columns > 4 ? 3.0 : 8.0;
     final compact = columns > 4;
+    // Decode thumbnails at tile size; full-resolution decodes of dozens of photos exhaust memory.
+    final mq = MediaQuery.of(context);
+    final thumbPx = (mq.size.width / columns * mq.devicePixelRatio).ceil();
     return Listener(
       onPointerDown: _onGridPointerDown,
       onPointerMove: _onGridPointerMove,
@@ -660,7 +676,7 @@ class _HomePageState extends State<HomePage> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              Image.file(image, fit: BoxFit.cover),
+              Image.file(image, fit: BoxFit.cover, cacheWidth: thumbPx),
               if (isSelected) Container(color: Colors.black.withValues(alpha: 0.35)),
               Positioned(
                 right: compact ? 3 : 6,
