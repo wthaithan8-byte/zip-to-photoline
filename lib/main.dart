@@ -329,9 +329,48 @@ class _HomePageState extends State<HomePage> {
   void _openViewer(int initialIndex) {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => _ImageViewerPage(images: _images, initialIndex: initialIndex),
+        builder: (_) => _ImageViewerPage(
+          images: _images,
+          initialIndex: initialIndex,
+          onDelete: (file) => _removeImages({file.path}),
+        ),
       ),
     );
+  }
+
+  void _removeImages(Set<String> paths) {
+    final oldToNew = <int, int>{};
+    final kept = <File>[];
+    for (var i = 0; i < _images.length; i++) {
+      if (paths.contains(_images[i].path)) continue;
+      oldToNew[i] = kept.length;
+      kept.add(_images[i]);
+    }
+    setState(() {
+      _images = kept;
+      final remappedSelection = _selectedOrder.where(oldToNew.containsKey).map((i) => oldToNew[i]!).toList();
+      _selectedOrder
+        ..clear()
+        ..addAll(remappedSelection);
+      final remappedShared = _sharedIndices.where(oldToNew.containsKey).map((i) => oldToNew[i]!).toSet();
+      _sharedIndices
+        ..clear()
+        ..addAll(remappedShared);
+    });
+    for (final p in paths) {
+      File(p).delete().catchError((_) => File(p));
+    }
+  }
+
+  Future<void> _deleteSelected() async {
+    final count = _selectedOrder.length;
+    if (count == 0 || !await _confirmDelete(context, 'ลบ $count รูปที่เลือก?')) return;
+    _removeImages(_selectedOrder.map((i) => _images[i].path).toSet());
+  }
+
+  Future<void> _deleteAll() async {
+    if (_images.isEmpty || !await _confirmDelete(context, 'ลบรูปทั้งหมด ${_images.length} รูป?')) return;
+    _removeImages(_images.map((f) => f.path).toSet());
   }
 
   void _showUpgradeDialog() {
@@ -505,6 +544,18 @@ class _HomePageState extends State<HomePage> {
               tooltip: 'เลือกทั้งหมด (สูงสุด $_maxSelection)',
               onPressed: _selectAllUpToLimit,
             ),
+          if (hasSelection)
+            IconButton(
+              icon: const Icon(Icons.delete_outline),
+              tooltip: 'ลบรูปที่เลือก',
+              onPressed: _deleteSelected,
+            )
+          else if (_images.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.delete_sweep_outlined),
+              tooltip: 'ลบรูปทั้งหมด',
+              onPressed: _deleteAll,
+            ),
         ],
       ),
       body: _buildBody(),
@@ -657,11 +708,31 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
+Future<bool> _confirmDelete(BuildContext context, String title) async {
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(title),
+      content: const Text('ลบออกจากแอปเท่านั้น ไฟล์ ZIP ต้นฉบับไม่หาย'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('ยกเลิก')),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          style: TextButton.styleFrom(foregroundColor: Colors.red),
+          child: const Text('ลบ'),
+        ),
+      ],
+    ),
+  );
+  return ok ?? false;
+}
+
 class _ImageViewerPage extends StatefulWidget {
-  const _ImageViewerPage({required this.images, required this.initialIndex});
+  const _ImageViewerPage({required this.images, required this.initialIndex, required this.onDelete});
 
   final List<File> images;
   final int initialIndex;
+  final void Function(File file) onDelete;
 
   @override
   State<_ImageViewerPage> createState() => _ImageViewerPageState();
@@ -670,12 +741,29 @@ class _ImageViewerPage extends StatefulWidget {
 class _ImageViewerPageState extends State<_ImageViewerPage> {
   late final PageController _controller;
   late int _currentIndex;
+  late final List<File> _images = List.of(widget.images);
 
   @override
   void initState() {
     super.initState();
     _currentIndex = widget.initialIndex;
     _controller = PageController(initialPage: widget.initialIndex);
+  }
+
+  Future<void> _deleteCurrent() async {
+    if (!await _confirmDelete(context, 'ลบรูปนี้?')) return;
+    final file = _images[_currentIndex];
+    widget.onDelete(file);
+    if (!mounted) return;
+    if (_images.length == 1) {
+      Navigator.pop(context);
+      return;
+    }
+    setState(() {
+      _images.removeAt(_currentIndex);
+      if (_currentIndex >= _images.length) _currentIndex = _images.length - 1;
+    });
+    _controller.jumpToPage(_currentIndex);
   }
 
   @override
@@ -691,15 +779,22 @@ class _ImageViewerPageState extends State<_ImageViewerPage> {
       appBar: AppBar(
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
-        title: Text('${_currentIndex + 1} / ${widget.images.length}'),
+        title: Text('${_currentIndex + 1} / ${_images.length}'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.delete_outline),
+            tooltip: 'ลบรูปนี้',
+            onPressed: _deleteCurrent,
+          ),
+        ],
       ),
       body: PageView.builder(
         controller: _controller,
-        itemCount: widget.images.length,
+        itemCount: _images.length,
         onPageChanged: (i) => setState(() => _currentIndex = i),
         itemBuilder: (context, index) {
           return InteractiveViewer(
-            child: Center(child: Image.file(widget.images[index])),
+            child: Center(child: Image.file(_images[index], key: ValueKey(_images[index].path))),
           );
         },
       ),
