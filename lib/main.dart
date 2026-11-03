@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import 'package:share_plus/share_plus.dart';
@@ -12,6 +13,8 @@ import 'purchase_service.dart';
 
 const _privacyPolicyUrl = 'https://wthaithan8-byte.github.io/zip-to-photoline/docs/privacy.html';
 const _termsOfUseUrl = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
+
+const _imageShareChannel = MethodChannel('zipphoto/share');
 
 const _imageExtensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic', '.heif'};
 const _tempDirPrefix = 'extracted_';
@@ -242,11 +245,22 @@ class _HomePageState extends State<HomePage> {
     if (_selectedOrder.isEmpty || _isSharing) return;
     setState(() => _isSharing = true);
     try {
-      final files = _selectedOrder.map((i) => XFile(_images[i].path)).toList();
-      await SharePlus.instance.share(ShareParams(
-        files: files,
-        sharePositionOrigin: _sharePositionOrigin(),
-      ));
+      final paths = _selectedOrder.map((i) => _images[i].path).toList();
+      final origin = _sharePositionOrigin();
+      if (Platform.isIOS) {
+        await _imageShareChannel.invokeMethod('shareImages', {
+          'paths': paths,
+          'x': origin.left,
+          'y': origin.top,
+          'w': origin.width,
+          'h': origin.height,
+        });
+      } else {
+        await SharePlus.instance.share(ShareParams(
+          files: paths.map(XFile.new).toList(),
+          sharePositionOrigin: origin,
+        ));
+      }
       setState(() => _sharedIndices.addAll(_selectedOrder));
       _clearSelection();
     } catch (e) {
