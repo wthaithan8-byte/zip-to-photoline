@@ -19,8 +19,9 @@ import UniformTypeIdentifiers
   }
 }
 
-// Shares photos as typed image data (like the Photos app) instead of file URLs,
-// so chat apps such as LINE treat them as a photo batch rather than files.
+// Shares each photo the way the Photos app does: a file URL registered under an
+// image type (public.jpeg etc.). Raw Data hid LINE from the share sheet, and an
+// untyped URL made LINE post each photo as a separate file message.
 final class ImageSharePlugin: NSObject, FlutterPlugin {
   static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(name: "zipphoto/share", binaryMessenger: registrar.messenger())
@@ -86,7 +87,7 @@ final class ImageItemSource: NSObject, UIActivityItemSource {
 
   func activityViewController(_ activityViewController: UIActivityViewController,
                               itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
-    try? Data(contentsOf: url)
+    url
   }
 
   func activityViewController(_ activityViewController: UIActivityViewController,
