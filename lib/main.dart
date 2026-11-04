@@ -122,17 +122,21 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _handleSharedFiles(List<SharedMediaFile> files) async {
-    final zipFile = files.firstWhere(
-      (f) => f.path.toLowerCase().endsWith('.zip'),
-      orElse: () => files.isNotEmpty ? files.first : SharedMediaFile(path: '', type: SharedMediaType.file),
-    );
     // The initial-media call and the stream can both deliver the same cold-start share.
-    if (zipFile.path.isEmpty || _isExtracting) return;
+    if (files.isEmpty || _isExtracting) return;
     ReceiveSharingIntent.instance.reset();
-    await _extractZip(zipFile.path);
+    final zipFile = files.where((f) => _extensionOf(f.path) == '.zip').firstOrNull;
+    if (zipFile != null) {
+      await _extractZip(zipFile.path);
+      return;
+    }
+    final imagePaths =
+        files.map((f) => f.path).where((p) => _imageExtensions.contains(_extensionOf(p))).toList();
+    await _importImages(imagePaths);
   }
 
-  Future<void> _extractZip(String zipPath) async {
+  // Like extraction, a new share replaces whatever is currently in the grid.
+  void _startLoading() {
     setState(() {
       _isExtracting = true;
       _images = [];
@@ -142,6 +146,53 @@ class _HomePageState extends State<HomePage> {
       _selectedOrder.clear();
       _sharedIndices.clear();
     });
+  }
+
+  Future<Directory> _createOutDir() async {
+    final tempDir = await getTemporaryDirectory();
+    final outDir = Directory('${tempDir.path}/$_tempDirPrefix${DateTime.now().millisecondsSinceEpoch}');
+    return outDir.create(recursive: true);
+  }
+
+  // Loose photos (already unzipped elsewhere) are copied out of the share inbox so
+  // they expire with the same temp-dir cleanup as extracted ones.
+  Future<void> _importImages(List<String> paths) async {
+    _startLoading();
+    if (paths.isEmpty) {
+      setState(() {
+        _isExtracting = false;
+        _error = 'ไม่พบไฟล์ที่ใช้ได้\nแชร์ไฟล์ ZIP หรือรูปภาพ (JPG, PNG, HEIC ฯลฯ) มาที่แอปนี้';
+      });
+      return;
+    }
+    setState(() => _extractTotal = paths.length);
+
+    try {
+      await _cleanupOldTempDirs();
+      final outDir = await _createOutDir();
+      final importedImages = <File>[];
+      for (final path in paths) {
+        importedImages.add(await File(path).copy('${outDir.path}/${_safeFileName(path)}'));
+        if (!mounted) return;
+        setState(() => _extractDone = importedImages.length);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _images = importedImages;
+        _isExtracting = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isExtracting = false;
+        _error = 'นำเข้ารูปภาพไม่สำเร็จ: $e';
+      });
+    }
+  }
+
+  Future<void> _extractZip(String zipPath) async {
+    _startLoading();
 
     InputFileStream? input;
     try {
@@ -166,9 +217,7 @@ class _HomePageState extends State<HomePage> {
           .where((e) => e.isFile && _imageExtensions.contains(_extensionOf(e.name)))
           .toList();
 
-      final tempDir = await getTemporaryDirectory();
-      final outDir = Directory('${tempDir.path}/$_tempDirPrefix${DateTime.now().millisecondsSinceEpoch}');
-      await outDir.create(recursive: true);
+      final outDir = await _createOutDir();
 
       if (!mounted) return;
       setState(() => _extractTotal = imageEntries.length);
@@ -625,7 +674,7 @@ class _HomePageState extends State<HomePage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                'ยังไม่มีรูปภาพ\n\nแชร์ไฟล์ ZIP มาที่แอปนี้จากแอปอื่น แล้วรูปภาพในไฟล์จะถูกแตกออกมาให้ที่นี่\n\nแตะรูปเพื่อเลือก กดค้างเพื่อดูรูปขยาย',
+                'ยังไม่มีรูปภาพ\n\nแชร์ไฟล์ ZIP มาที่แอปนี้จากแอปอื่น แล้วรูปภาพในไฟล์จะถูกแตกออกมาให้ที่นี่ (แชร์รูปภาพมาตรงๆ ก็ได้)\n\nแตะรูปเพื่อเลือก กดค้างเพื่อดูรูปขยาย',
                 textAlign: TextAlign.center,
               ),
               if (!_isPremium) ...[
@@ -730,7 +779,7 @@ Future<bool> _confirmDelete(BuildContext context, String title) async {
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text(title),
-      content: const Text('ลบออกจากแอปเท่านั้น ไฟล์ ZIP ต้นฉบับไม่หาย'),
+      content: const Text('ลบออกจากแอปเท่านั้น ไฟล์ต้นฉบับไม่หาย'),
       actions: [
         TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('ยกเลิก')),
         TextButton(
