@@ -1,4 +1,5 @@
 import Flutter
+import Photos
 import UIKit
 import UniformTypeIdentifiers
 
@@ -30,12 +31,67 @@ final class ImageSharePlugin: NSObject, FlutterPlugin {
   }
 
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard call.method == "shareImages",
-          let args = call.arguments as? [String: Any],
+    guard let args = call.arguments as? [String: Any],
           let paths = args["paths"] as? [String] else {
       result(FlutterMethodNotImplemented)
       return
     }
+    switch call.method {
+    case "shareImages":
+      shareImages(paths: paths, args: args, result: result)
+    case "saveImages":
+      let dates = (args["dates"] as? [NSNumber] ?? []).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
+      saveImages(paths: paths, dates: dates, result: result)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  // The Photos library (and LINE's picker) orders photos by creation date, so each
+  // photo gets the date it's given rather than the one in its EXIF data.
+  private func saveImages(paths: [String], dates: [Date], result: @escaping FlutterResult) {
+    PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+      guard status == .authorized || status == .limited else {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "denied", message: "Photo library access denied", details: nil))
+        }
+        return
+      }
+      PHPhotoLibrary.shared().performChanges({
+        for (index, path) in paths.enumerated() {
+          let url = URL(fileURLWithPath: path)
+          let data: Data?
+          if Self.photosFileTypes.contains(url.pathExtension.lowercased()) {
+            data = nil
+          } else if let jpeg = UIImage(contentsOfFile: path)?.jpegData(compressionQuality: 0.95) {
+            data = jpeg
+          } else {
+            continue
+          }
+          let request = PHAssetCreationRequest.forAsset()
+          if let data = data {
+            request.addResource(with: .photo, data: data, options: nil)
+          } else {
+            request.addResource(with: .photo, fileURL: url, options: nil)
+          }
+          if index < dates.count { request.creationDate = dates[index] }
+        }
+      }) { success, error in
+        DispatchQueue.main.async {
+          if success {
+            result(true)
+          } else {
+            result(FlutterError(code: "save_failed", message: error?.localizedDescription, details: nil))
+          }
+        }
+      }
+    }
+  }
+
+  // Formats Photos stores as-is; anything else (WebP, BMP) is re-encoded as JPEG.
+  private static let photosFileTypes: Set<String> = ["jpg", "jpeg", "png", "heic", "heif", "gif"]
+
+  private func shareImages(paths: [String], args: [String: Any], result: @escaping FlutterResult) {
     guard let presenter = Self.topViewController() else {
       result(FlutterError(code: "no_view", message: "No view controller to present from", details: nil))
       return

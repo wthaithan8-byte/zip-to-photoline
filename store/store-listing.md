@@ -16,9 +16,11 @@ ZIP TO PHOTOLINE ช่วยให้คุณ:
 
 📦 แตกไฟล์ ZIP อัตโนมัติ — แค่แชร์ไฟล์ ZIP มาที่แอปนี้จากแอปไหนก็ได้ (ไฟล์ใน LINE, ไดรฟ์, อีเมล ฯลฯ) แอปจะแตกไฟล์และดึงรูปภาพออกมาให้ทันที
 
-🖼️ เลือกรูปง่ายเหมือนแอปแชท — แตะเพื่อเลือกรูป มีเลขลำดับกำกับ เลือกได้สูงสุด 50 รูปต่อครั้ง กดค้างเพื่อดูรูปขยาย
+🖼️ เลือกรูปง่ายเหมือนแอปแชท — แตะเพื่อเลือกรูป หรือลากนิ้วผ่านหลายรูปเพื่อเลือกทีเดียว มีเลขลำดับกำกับ กดค้างเพื่อดูรูปขยาย
 
-🔗 แชร์ต่อได้ทันที — กดปุ่มแชร์ครั้งเดียว ส่งรูปที่เลือกไปยัง LINE หรือแอปอื่นที่ต้องการได้เลย ไม่ต้องบันทึกรูปลงเครื่องก่อน
+🔗 แชร์ต่อได้ทันที — กดปุ่มแชร์ครั้งเดียว ส่งรูปที่เลือกไปยัง LINE หรือแอปอื่นที่ต้องการได้เลย ไม่ต้องบันทึกรูปลงเครื่องก่อน (ฟรี 10 รูปต่อครั้ง, Premium ไม่จำกัด)
+
+💾 บันทึกลงแอปรูปภาพตามลำดับ — รูปจะเรียงติดกันตามเลขที่เลือก พร้อมเลือกส่งเป็นอัลบั้มใน LINE
 
 🔒 ความเป็นส่วนตัว 100% — แอปทำงานบนเครื่องทั้งหมด ไม่มีการเชื่อมต่ออินเทอร์เน็ต ไม่เก็บข้อมูลผู้ใช้ ไม่มีโฆษณา
 
@@ -44,9 +46,11 @@ ZIP TO PHOTOLINE lets you:
 
 📦 Auto-extract ZIP files — just share a ZIP file to this app from any app (LINE Files, Drive, email, etc.) and it instantly extracts every image inside.
 
-🖼️ Familiar chat-style selection — tap to select photos, with numbered order badges. Select up to 50 photos at once. Long-press to view full screen.
+🖼️ Familiar chat-style selection — tap to select photos, or drag across several to select them at once, with numbered order badges. Long-press to view full screen.
 
-🔗 Share instantly — one tap sends your selected photos to LINE or any other app, no need to save to your gallery first.
+🔗 Share instantly — one tap sends your selected photos to LINE or any other app, no need to save to your gallery first (free: 10 photos per share, Premium: unlimited).
+
+💾 Save to Photos in order — saved photos sit together in the order you numbered them, ready to send as an album from LINE.
 
 🔒 100% private — everything runs on-device. No internet connection, no data collection, no ads.
 
