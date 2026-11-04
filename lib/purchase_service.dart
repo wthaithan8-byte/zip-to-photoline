@@ -37,8 +37,9 @@ class PurchaseService {
         if (p.id == monthlyId) _monthlyProductDetails = p;
         if (p.id == yearlyId) _yearlyProductDetails = p;
       }
-    });
-    await refreshEntitlement();
+    }).catchError((_) {});
+    // Bounded so a slow StoreKit never holds the app on the launch screen.
+    await refreshEntitlement().timeout(const Duration(seconds: 3), onTimeout: () {});
   }
 
   /// Re-derives premium from the App Store so expired, cancelled or refunded
