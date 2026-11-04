@@ -213,27 +213,24 @@ class _HomePageState extends State<HomePage> {
     return '${DateTime.now().microsecondsSinceEpoch}_$base';
   }
 
+  // Selection is unlimited so photos can be deleted in bulk; only sharing is capped.
   void _toggleSelect(int index) {
     setState(() {
-      if (_selectedOrder.contains(index)) {
-        _selectedOrder.remove(index);
-      } else {
-        if (_selectedOrder.length >= _maxSelection) {
-          if (!_isPremium) {
-            _showUpgradeDialog();
-          } else {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('เลือกได้สูงสุด $_maxSelection รูปต่อครั้ง')),
-            );
-          }
-          return;
-        }
-        _selectedOrder.add(index);
-      }
+      if (!_selectedOrder.remove(index)) _selectedOrder.add(index);
     });
   }
 
   void _clearSelection() => setState(() => _selectedOrder.clear());
+
+  void _showShareLimitNotice() {
+    if (!_isPremium) {
+      _showUpgradeDialog();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('แชร์ได้สูงสุด $_maxSelection รูปต่อครั้ง')),
+      );
+    }
+  }
 
   void _selectAllUpToLimit() {
     setState(() {
@@ -241,20 +238,16 @@ class _HomePageState extends State<HomePage> {
         if (_selectedOrder.length >= _maxSelection) break;
         if (!_selectedOrder.contains(i)) _selectedOrder.add(i);
       }
-      if (_selectedOrder.length >= _maxSelection && _images.length > _maxSelection) {
-        if (!_isPremium) {
-          _showUpgradeDialog();
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('เลือกได้สูงสุด $_maxSelection รูปต่อครั้ง')),
-          );
-        }
-      }
     });
+    if (_selectedOrder.length >= _maxSelection && _images.length > _maxSelection) _showShareLimitNotice();
   }
 
   Future<void> _shareSelected() async {
     if (_selectedOrder.isEmpty || _isSharing) return;
+    if (_selectedOrder.length > _maxSelection) {
+      _showShareLimitNotice();
+      return;
+    }
     setState(() => _isSharing = true);
     try {
       final paths = _selectedOrder.map((i) => _images[i].path).toList();
@@ -407,11 +400,11 @@ class _HomePageState extends State<HomePage> {
                   children: [
                     const Text('เวอร์ชันฟรี:', style: TextStyle(fontWeight: FontWeight.bold)),
                     const Text('• ZIP สูงสุด $_freeMaxZipSizeMB MB'),
-                    const Text('• เลือกรูปได้ $_freeMaxSelection รูป/ครั้ง'),
+                    const Text('• แชร์รูปได้ $_freeMaxSelection รูป/ครั้ง'),
                     const SizedBox(height: 12),
                     const Text('Premium:', style: TextStyle(fontWeight: FontWeight.bold)),
                     const Text('• ZIP สูงสุด $_premiumMaxZipSizeMB MB'),
-                    const Text('• เลือกรูปได้ $_premiumMaxSelection รูป/ครั้ง'),
+                    const Text('• แชร์รูปได้ $_premiumMaxSelection รูป/ครั้ง'),
                     const SizedBox(height: 16),
                     SizedBox(
                       width: double.infinity,
@@ -529,15 +522,18 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final hasSelection = _selectedOrder.isNotEmpty;
+    final overShareLimit = _selectedOrder.length > _maxSelection;
     return Scaffold(
       appBar: AppBar(
         leading: hasSelection
             ? IconButton(icon: const Icon(Icons.close), onPressed: _clearSelection)
             : null,
         title: Text(
-          hasSelection
-              ? 'เลือก ${_selectedOrder.length}/$_maxSelection รูป'
-              : 'ZipPhoto',
+          !hasSelection
+              ? 'ZipPhoto'
+              : overShareLimit
+                  ? 'เลือก ${_selectedOrder.length} รูป'
+                  : 'เลือก ${_selectedOrder.length}/$_maxSelection รูป',
         ),
         actions: [
           if (_isPremium)
@@ -576,6 +572,7 @@ class _HomePageState extends State<HomePage> {
           ? FloatingActionButton.extended(
               key: _shareButtonKey,
               onPressed: _isSharing ? null : _shareSelected,
+              backgroundColor: overShareLimit ? Colors.grey : null,
               icon: _isSharing
                   ? const SizedBox(
                       width: 18,
@@ -583,7 +580,11 @@ class _HomePageState extends State<HomePage> {
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                     )
                   : const Icon(Icons.share),
-              label: Text(_isSharing ? 'กำลังเตรียมไฟล์...' : 'แชร์ ${_selectedOrder.length} รูป'),
+              label: Text(_isSharing
+                  ? 'กำลังเตรียมไฟล์...'
+                  : overShareLimit
+                      ? 'แชร์ได้สูงสุด $_maxSelection รูป'
+                      : 'แชร์ ${_selectedOrder.length} รูป'),
             )
           : null,
     );
