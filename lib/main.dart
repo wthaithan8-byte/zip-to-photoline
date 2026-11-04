@@ -719,7 +719,9 @@ class _HomePageState extends State<HomePage> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
+                        // Narrower than the default padding so both links fit on an iPhone SE.
                         TextButton(
+                          style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
                           onPressed: () => launchUrl(Uri.parse(_privacyPolicyUrl),
                               mode: LaunchMode.externalApplication),
                           child: const Text('นโยบายความเป็นส่วนตัว',
@@ -727,6 +729,7 @@ class _HomePageState extends State<HomePage> {
                         ),
                         const Text('|', style: TextStyle(fontSize: 11)),
                         TextButton(
+                          style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
                           onPressed: () => launchUrl(Uri.parse(_termsOfUseUrl),
                               mode: LaunchMode.externalApplication),
                           child: const Text('เงื่อนไขการใช้งาน',
