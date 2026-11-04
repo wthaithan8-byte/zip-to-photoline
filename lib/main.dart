@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:archive/archive.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -21,9 +24,9 @@ const _tempDirPrefix = 'extracted_';
 const _retentionDuration = Duration(hours: 12);
 
 const _freeMaxSelection = 10;
-const _premiumMaxSelection = 50;
 const _freeMaxZipSizeMB = 50;
 const _premiumMaxZipSizeMB = 500;
+const _saveBatchSize = 10;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -62,6 +65,9 @@ class _HomePageState extends State<HomePage> {
   int _extractTotal = 0;
   String? _error;
   bool _isSharing = false;
+  bool _isSaving = false;
+  int _saveDone = 0;
+  int _saveTotal = 0;
   final List<int> _selectedOrder = [];
   final Set<int> _sharedIndices = {};
   final _shareButtonKey = GlobalKey();
@@ -70,8 +76,19 @@ class _HomePageState extends State<HomePage> {
   final Map<int, Offset> _pinchPointers = {};
   double? _pinchBaseDistance;
 
+  final _gridKey = GlobalKey();
+  final _gridScrollController = ScrollController();
+  int? _dragAnchor;
+  bool _dragDeselects = false;
+  List<int> _dragBaseSelection = const [];
+  Offset? _dragPosition;
+  Timer? _autoScrollTimer;
+  double _autoScrollStep = 0;
+
   bool get _isPremium => PurchaseService.instance.isPremium;
-  int get _maxSelection => _isPremium ? _premiumMaxSelection : _freeMaxSelection;
+  // Premium shares and saves without a cap.
+  int? get _shareLimit => _isPremium ? null : _freeMaxSelection;
+  bool get _overShareLimit => _shareLimit != null && _selectedOrder.length > _shareLimit!;
   int get _maxZipSizeMB => _isPremium ? _premiumMaxZipSizeMB : _freeMaxZipSizeMB;
   int get _maxZipSizeBytes => _maxZipSizeMB * 1024 * 1024;
 
@@ -100,6 +117,8 @@ class _HomePageState extends State<HomePage> {
     _intentSub.cancel();
     _purchaseSub?.cancel();
     _lifecycleListener.dispose();
+    _gridScrollController.dispose();
+    _autoScrollTimer?.cancel();
     super.dispose();
   }
 
@@ -271,30 +290,21 @@ class _HomePageState extends State<HomePage> {
 
   void _clearSelection() => setState(() => _selectedOrder.clear());
 
-  void _showShareLimitNotice() {
-    if (!_isPremium) {
-      _showUpgradeDialog();
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('แชร์ได้สูงสุด $_maxSelection รูปต่อครั้ง')),
-      );
-    }
-  }
-
   void _selectAllUpToLimit() {
+    final limit = _shareLimit ?? _images.length;
     setState(() {
       for (var i = 0; i < _images.length; i++) {
-        if (_selectedOrder.length >= _maxSelection) break;
+        if (_selectedOrder.length >= limit) break;
         if (!_selectedOrder.contains(i)) _selectedOrder.add(i);
       }
     });
-    if (_selectedOrder.length >= _maxSelection && _images.length > _maxSelection) _showShareLimitNotice();
+    if (_selectedOrder.length >= limit && _images.length > limit) _showUpgradeDialog();
   }
 
   Future<void> _shareSelected() async {
-    if (_selectedOrder.isEmpty || _isSharing) return;
-    if (_selectedOrder.length > _maxSelection) {
-      _showShareLimitNotice();
+    if (_selectedOrder.isEmpty || _isSharing || _isSaving) return;
+    if (_overShareLimit) {
+      _showUpgradeDialog();
       return;
     }
     setState(() => _isSharing = true);
@@ -333,6 +343,63 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  // LINE only sends photos as one album when they're picked in its own picker, which
+  // reads the Photos library. Saving gives #1 the oldest creation date and #N the newest
+  // so the photos sit together, in selection order, at the end of the library.
+  Future<void> _saveSelectedToPhotos() async {
+    if (_selectedOrder.isEmpty || _isSharing || _isSaving) return;
+    if (_overShareLimit) {
+      _showUpgradeDialog();
+      return;
+    }
+    final paths = _selectedOrder.map((i) => _images[i].path).toList();
+    final firstDateMs = DateTime.now().millisecondsSinceEpoch - paths.length * 1000;
+    setState(() {
+      _isSaving = true;
+      _saveDone = 0;
+      _saveTotal = paths.length;
+    });
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      // Saved in small batches so large selections can show progress.
+      for (var start = 0; start < paths.length; start += _saveBatchSize) {
+        final end = min(start + _saveBatchSize, paths.length);
+        await _imageShareChannel.invokeMethod<bool>('saveImages', {
+          'paths': paths.sublist(start, end),
+          'dates': [for (var i = start; i < end; i++) firstDateMs + i * 1000],
+        });
+        if (!mounted) return;
+        setState(() => _saveDone = end);
+      }
+      final saved = paths.toSet();
+      setState(() {
+        for (var i = 0; i < _images.length; i++) {
+          if (saved.contains(_images[i].path)) _sharedIndices.add(i);
+        }
+      });
+      _clearSelection();
+      messenger.showSnackBar(
+        SnackBar(content: Text('บันทึก ${paths.length} รูปลงแอปรูปภาพแล้ว')),
+      );
+    } on PlatformException catch (e) {
+      if (e.code == 'denied') {
+        messenger.showSnackBar(SnackBar(
+          content: const Text('ZipPhoto ไม่ได้รับอนุญาตให้บันทึกรูป\nเปิดได้ที่ การตั้งค่า > ZipPhoto > รูปภาพ'),
+          duration: const Duration(seconds: 6),
+          action: SnackBarAction(
+            label: 'ตั้งค่า',
+            onPressed: () => launchUrl(Uri.parse('app-settings:')),
+          ),
+        ));
+      } else {
+        final partial = _saveDone > 0 ? ' (บันทึกแล้ว $_saveDone จาก ${paths.length} รูป)' : '';
+        messenger.showSnackBar(SnackBar(content: Text('บันทึกไม่สำเร็จ: ${e.message}$partial')));
+      }
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
   // iPad presents the share sheet as a popover and requires a non-empty anchor rect.
   Rect _sharePositionOrigin() {
     final box = _shareButtonKey.currentContext?.findRenderObject() as RenderBox?;
@@ -348,7 +415,16 @@ class _HomePageState extends State<HomePage> {
   void _onGridPointerDown(PointerDownEvent e) {
     _pinchPointers[e.pointer] = e.position;
     if (_pinchPointers.length == 2) {
-      setState(() => _pinchBaseDistance = _pinchDistance());
+      setState(() {
+        _pinchBaseDistance = _pinchDistance();
+        // A second finger means pinch: undo a drag-select the first finger started.
+        if (_dragAnchor != null) {
+          _selectedOrder
+            ..clear()
+            ..addAll(_dragBaseSelection);
+        }
+      });
+      _endDragSelect();
     }
   }
 
@@ -380,6 +456,119 @@ class _HomePageState extends State<HomePage> {
   }
 
   int _maxGridColumns() => (MediaQuery.of(context).size.width / 70).floor().clamp(3, 10);
+
+  int _columnsShown() => _gridColumns.clamp(1, _maxGridColumns());
+
+  double _gridSpacingFor(int columns) => columns > 4 ? 3.0 : 8.0;
+
+  // Maps a touch point to a photo index from the grid geometry, so it stays right
+  // while the grid auto-scrolls under a still finger. Off-photo points give null
+  // unless [clamp] snaps them to the nearest photo.
+  int? _gridIndexAt(Offset globalPosition, {bool clamp = false}) {
+    final box = _gridKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize || _images.isEmpty) return null;
+    final columns = _columnsShown();
+    final spacing = _gridSpacingFor(columns);
+    final cell = (box.size.width - spacing * (columns + 1)) / columns;
+    final local = box.globalToLocal(globalPosition);
+    final x = local.dx - spacing;
+    final y = local.dy + _gridScrollController.offset - spacing;
+    final col = (x / (cell + spacing)).floor();
+    final row = (y / (cell + spacing)).floor();
+    final index = row * columns + col;
+    if (clamp) {
+      return (max(row, 0) * columns + col.clamp(0, columns - 1)).clamp(0, _images.length - 1);
+    }
+    if (col < 0 || col >= columns || row < 0 || index >= _images.length) return null;
+    return index;
+  }
+
+  // Like Photos: a mostly-horizontal drag that starts on a photo selects every photo
+  // from there to the finger, numbered in the direction of the drag. Starting on a
+  // selected photo deselects instead. A vertical drag still scrolls the grid.
+  void _onDragSelectStart(DragStartDetails d) {
+    if (_pinchPointers.length > 1) return;
+    final index = _gridIndexAt(d.globalPosition);
+    if (index == null) return;
+    _dragAnchor = index;
+    _dragDeselects = _selectedOrder.contains(index);
+    _dragBaseSelection = List.of(_selectedOrder);
+    _dragPosition = d.globalPosition;
+    HapticFeedback.selectionClick();
+    _applyDragSelection();
+  }
+
+  void _onDragSelectUpdate(DragUpdateDetails d) {
+    if (_dragAnchor == null) return;
+    _dragPosition = d.globalPosition;
+    _applyDragSelection();
+    _updateAutoScroll();
+  }
+
+  void _endDragSelect() {
+    _dragAnchor = null;
+    _dragPosition = null;
+    _autoScrollTimer?.cancel();
+    _autoScrollTimer = null;
+  }
+
+  void _applyDragSelection() {
+    final anchor = _dragAnchor;
+    final position = _dragPosition;
+    if (anchor == null || position == null) return;
+    final current = _gridIndexAt(position, clamp: true);
+    if (current == null) return;
+    final step = current >= anchor ? 1 : -1;
+    final swept = [for (var i = anchor; i != current + step; i += step) i];
+    final List<int> next;
+    if (_dragDeselects) {
+      final sweptSet = swept.toSet();
+      next = _dragBaseSelection.where((i) => !sweptSet.contains(i)).toList();
+    } else {
+      final base = _dragBaseSelection.toSet();
+      next = [..._dragBaseSelection, ...swept.where((i) => !base.contains(i))];
+    }
+    if (listEquals(next, _selectedOrder)) return;
+    setState(() {
+      _selectedOrder
+        ..clear()
+        ..addAll(next);
+    });
+  }
+
+  // Scrolls faster the closer the finger gets to (or the further past) the grid's edge.
+  void _updateAutoScroll() {
+    final box = _gridKey.currentContext?.findRenderObject() as RenderBox?;
+    final position = _dragPosition;
+    if (box == null || position == null) return;
+    const edge = 80.0;
+    const maxStep = 24.0;
+    final y = box.globalToLocal(position).dy;
+    final double step;
+    if (y < edge) {
+      step = -maxStep * ((edge - y) / edge).clamp(0.1, 1.0);
+    } else if (y > box.size.height - edge) {
+      step = maxStep * ((y - box.size.height + edge) / edge).clamp(0.1, 1.0);
+    } else {
+      step = 0;
+    }
+    _autoScrollStep = step;
+    if (step == 0) {
+      _autoScrollTimer?.cancel();
+      _autoScrollTimer = null;
+    } else {
+      _autoScrollTimer ??= Timer.periodic(const Duration(milliseconds: 16), (_) => _autoScrollTick());
+    }
+  }
+
+  void _autoScrollTick() {
+    if (!_gridScrollController.hasClients) return;
+    final position = _gridScrollController.position;
+    final target = (position.pixels + _autoScrollStep).clamp(position.minScrollExtent, position.maxScrollExtent);
+    if (target == position.pixels) return;
+    _gridScrollController.jumpTo(target);
+    _applyDragSelection();
+  }
 
   void _openViewer(int initialIndex) {
     Navigator.of(context).push(
@@ -453,7 +642,7 @@ class _HomePageState extends State<HomePage> {
                     const SizedBox(height: 12),
                     const Text('Premium:', style: TextStyle(fontWeight: FontWeight.bold)),
                     const Text('• ZIP สูงสุด $_premiumMaxZipSizeMB MB'),
-                    const Text('• แชร์รูปได้ $_premiumMaxSelection รูป/ครั้ง'),
+                    const Text('• แชร์รูปได้ไม่จำกัด'),
                     const SizedBox(height: 16),
                     SizedBox(
                       width: double.infinity,
@@ -571,7 +760,8 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final hasSelection = _selectedOrder.isNotEmpty;
-    final overShareLimit = _selectedOrder.length > _maxSelection;
+    final overShareLimit = _overShareLimit;
+    final busy = _isSharing || _isSaving;
     return Scaffold(
       appBar: AppBar(
         leading: hasSelection
@@ -580,9 +770,9 @@ class _HomePageState extends State<HomePage> {
         title: Text(
           !hasSelection
               ? 'ZipPhoto'
-              : overShareLimit
+              : _shareLimit == null || overShareLimit
                   ? 'เลือก ${_selectedOrder.length} รูป'
-                  : 'เลือก ${_selectedOrder.length}/$_maxSelection รูป',
+                  : 'เลือก ${_selectedOrder.length}/$_shareLimit รูป',
         ),
         actions: [
           if (_isPremium)
@@ -599,7 +789,7 @@ class _HomePageState extends State<HomePage> {
           if (_images.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.checklist),
-              tooltip: 'เลือกทั้งหมด (สูงสุด $_maxSelection)',
+              tooltip: _isPremium ? 'เลือกทั้งหมด' : 'เลือกทั้งหมด (สูงสุด $_freeMaxSelection)',
               onPressed: _selectAllUpToLimit,
             ),
           if (hasSelection)
@@ -618,22 +808,43 @@ class _HomePageState extends State<HomePage> {
       ),
       body: _buildBody(),
       floatingActionButton: hasSelection
-          ? FloatingActionButton.extended(
-              key: _shareButtonKey,
-              onPressed: _isSharing ? null : _shareSelected,
-              backgroundColor: overShareLimit ? Colors.grey : null,
-              icon: _isSharing
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                    )
-                  : const Icon(Icons.share),
-              label: Text(_isSharing
-                  ? 'กำลังเตรียมไฟล์...'
-                  : overShareLimit
-                      ? 'แชร์ได้สูงสุด $_maxSelection รูป'
-                      : 'แชร์ ${_selectedOrder.length} รูป'),
+          ? Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (Platform.isIOS) ...[
+                  FloatingActionButton.extended(
+                    heroTag: null,
+                    onPressed: busy ? null : _saveSelectedToPhotos,
+                    backgroundColor: overShareLimit ? Colors.grey : null,
+                    icon: _isSaving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.save_alt),
+                    label: Text(_isSaving ? 'บันทึก $_saveDone/$_saveTotal' : 'บันทึกลงรูปภาพ'),
+                  ),
+                  const SizedBox(width: 12),
+                ],
+                FloatingActionButton.extended(
+                  key: _shareButtonKey,
+                  onPressed: busy ? null : _shareSelected,
+                  backgroundColor: overShareLimit ? Colors.grey : null,
+                  icon: _isSharing
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.share),
+                  label: Text(_isSharing
+                      ? 'กำลังเตรียมไฟล์...'
+                      : overShareLimit
+                          ? 'แชร์ได้สูงสุด $_freeMaxSelection รูป'
+                          : 'แชร์ ${_selectedOrder.length} รูป'),
+                ),
+              ],
             )
           : null,
     );
@@ -674,7 +885,7 @@ class _HomePageState extends State<HomePage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                'ยังไม่มีรูปภาพ\n\nแชร์ไฟล์ ZIP มาที่แอปนี้จากแอปอื่น แล้วรูปภาพในไฟล์จะถูกแตกออกมาให้ที่นี่ (แชร์รูปภาพมาตรงๆ ก็ได้)\n\nแตะรูปเพื่อเลือก กดค้างเพื่อดูรูปขยาย',
+                'ยังไม่มีรูปภาพ\n\nแชร์ไฟล์ ZIP มาที่แอปนี้จากแอปอื่น แล้วรูปภาพในไฟล์จะถูกแตกออกมาให้ที่นี่ (แชร์รูปภาพมาตรงๆ ก็ได้)\n\nแตะรูปเพื่อเลือก ลากนิ้วไปด้านข้างบนรูปเพื่อเลือกทีละหลายรูป กดค้างเพื่อดูรูปขยาย',
                 textAlign: TextAlign.center,
               ),
               if (!_isPremium) ...[
@@ -695,8 +906,8 @@ class _HomePageState extends State<HomePage> {
         ),
       );
     }
-    final columns = _gridColumns.clamp(1, _maxGridColumns());
-    final spacing = columns > 4 ? 3.0 : 8.0;
+    final columns = _columnsShown();
+    final spacing = _gridSpacingFor(columns);
     final compact = columns > 4;
     // Decode thumbnails at tile size; full-resolution decodes of dozens of photos exhaust memory.
     final mq = MediaQuery.of(context);
@@ -706,7 +917,15 @@ class _HomePageState extends State<HomePage> {
       onPointerMove: _onGridPointerMove,
       onPointerUp: _onGridPointerEnd,
       onPointerCancel: _onGridPointerEnd,
+      child: GestureDetector(
+      key: _gridKey,
+      dragStartBehavior: DragStartBehavior.down,
+      onHorizontalDragStart: _onDragSelectStart,
+      onHorizontalDragUpdate: _onDragSelectUpdate,
+      onHorizontalDragEnd: (_) => _endDragSelect(),
+      onHorizontalDragCancel: _endDragSelect,
       child: GridView.builder(
+      controller: _gridScrollController,
       physics: _pinchBaseDistance != null ? const NeverScrollableScrollPhysics() : null,
       padding: EdgeInsets.fromLTRB(spacing, spacing, spacing, 88),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -769,6 +988,7 @@ class _HomePageState extends State<HomePage> {
           ),
         );
       },
+      ),
       ),
     );
   }
